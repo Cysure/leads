@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WEB BETTER DEAL FLOW</title>
+<link rel="icon" href="img/favicon.png">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand">
+    <img src="img/logo-webbetter-dark.png" alt="Web Better" class="logo">
+    <div class="brand-text"><b>DEAL FLOW</b><span>SEO · GEO · Reviews lead ranking</span></div>
+  </div>
+  <div class="progress" id="progress"></div>
+  <div class="top-actions">
+    <button id="reload" class="ghost" title="Reload scan results">↻ Refresh</button>
+    <button id="export" class="primary">Export CSV</button>
+  </div>
+</header>
+
+<section class="kpis" id="kpis"></section>
+<section class="prediction" id="prediction"></section>
+
+<nav class="tabs">
+  <button data-tab="ranked" class="on">Ranked leads</button>
+  <button data-tab="dead">No working website <span id="deadCount"></span></button>
+  <button data-tab="method">Forecast assumptions &amp; method</button>
+</nav>
+
+<main>
+  <section id="tab-ranked">
+    <div class="filters">
+      <input id="q" type="search" placeholder="Search company, domain, contact, industry…">
+      <div class="chips" id="tiers">
+        <button data-t="AB" class="on">A + B</button>
+        <button data-t="A">Tier A</button>
+        <button data-t="B">Tier B</button>
+        <button data-t="C">Tier C</button>
+        <button data-t="inv">All not visible</button>
+        <button data-t="V">Visible (skip)</button>
+        <button data-t="all">All live</button>
+      </div>
+      <select id="country"><option value="">All countries</option></select>
+      <select id="status">
+        <option value="">Any status</option><option value="new">New</option><option value="emailed">Emailed</option>
+        <option value="called">Called</option><option value="meeting">Meeting</option><option value="won">Won</option><option value="lost">Lost</option>
+      </select>
+      <label class="check"><input type="checkbox" id="hasPhone"> Has phone</label>
+      <label class="check"><input type="checkbox" id="relaunchOnly"> Needs relaunch</label>
+    </div>
+    <div class="table-wrap">
+      <table id="table">
+        <thead><tr>
+          <th data-s="rank">#</th><th data-s="tier">Tier</th><th data-s="company">Company</th><th>Contact</th>
+          <th data-s="visibility" title="Lower = harder to find on Google and in AI answers">Visibility</th>
+          <th data-s="reviews">Google reviews</th>
+          <th data-s="conversion" title="How well the homepage turns visitors into enquiries (CTAs on phone and desktop)">Conversion</th>
+          <th data-s="revenue" title="Annual revenue: D&amp;B figure where available, otherwise staff × industry median">Revenue</th>
+          <th data-s="fit">Fit</th><th data-s="deal">Deal score</th>
+          <th data-s="ev" title="Chance we sell them a website: email to everyone, plus calls for tier A and B">Close forecast</th><th>Status</th>
+        </tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+    <div class="pager" id="pager"></div>
+  </section>
+
+  <section id="tab-dead" hidden>
+    <p class="note">These domains have no working website: parked or for-sale pages, "under construction" placeholders, hosting default pages, or domains that do not answer. They cannot be scored for SEO/GEO, but a missing website is the most direct pitch there is. Emails to domains that do not exist will bounce; re-check by hand before calling.</p>
+    <div class="table-wrap"><table id="deadTable"><thead><tr><th>Company</th><th>Domain</th><th>Contact</th><th>Phone</th><th>Why no site</th><th>Revenue</th><th>P(close)</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section id="tab-method" hidden>
+    <div class="method">
+      <div class="card">
+        <h3>Forecast assumptions</h3>
+        <p class="note">Planning rates for the call forecast, not measured results. Change them to match your team's numbers; the ranking and totals update at once. Saved in this browser.</p>
+        <form id="assump"></form>
+        <button id="resetAssump" class="ghost">Reset to defaults</button>
+      </div>
+      <div class="card">
+        <h3>How leads are scored</h3>
+        <ul class="method-list">
+          <li><b>Sources:</b> every lead file is merged on website domain, so each company appears once. The most senior contact is shown first.</li>
+          <li><b>Website reading:</b> Crawlee and Cheerio fetch each homepage, robots.txt, sitemap and llms.txt the way Google's crawler and AI crawlers (GPTBot, ClaudeBot, PerplexityBot) see them. Crawlee and Playwright then render it in Chromium on a phone screen for JS-built content, mobile layout and load time.</li>
+          <li><b>SEO score (0–100):</b> points lost for each issue: HTTPS, title, description, H1, indexability, mobile viewport and overflow, sitemap, canonical, content depth, alt text, internal links, speed, freshness and outdated builds.</li>
+          <li><b>GEO score (0–100):</b> whether AI assistants can read, trust and cite the company. Checks: AI crawler blocks, schema.org business data, content readable without JavaScript, address and phone on the page, about page, FAQ, linked profiles, llms.txt, Google Maps profile and reviews.</li>
+          <li><b>Visibility</b> = 55 % SEO + 45 % GEO. Below the threshold, a lead counts as <i>not visible</i>. It is a rule-based on-site estimate, not a measured Google ranking position.</li>
+          <li><b>Google reviews:</b> Playwright searches Google Maps for company + city and reads the rating and review count. A listing counts only if its website is the lead's domain or the name matches.</li>
+          <li><b>Deal score</b> = 50 % visibility gap + 38 % fit (decision-maker, direct line, 5–80 staff, hiring, CH) + review strength + a bonus when a relaunch is needed.</li>
+          <li><b>Conversion score (0–100):</b> the browser finds every call-to-action on the phone and desktop homepage. It checks: a CTA on the first screen, real button vs text link, colour contrast, tap size, tap-to-call, button wording, enquiry form length, sticky mobile CTA, cookie-banner cover, booking/chat/WhatsApp. Each finding comes with the fix. Green and red boxes on the screenshot mark strong and weak CTAs.</li>
+          <li><b>Revenue:</b> the D&amp;B figure where the lead has one, converted to CHF. Otherwise staff × the median revenue per employee of that industry, measured on the D&amp;B leads. Wer-zu-Wem revenue bands are respected. With no size data, a typical SME is assumed and marked as a rough guess.</li>
+          <li><b>Close forecast:</b> every lead is emailed. P(close by email) = reply rate × meetings per reply × win rate, scaled by visibility gap, seniority, personal vs info@ address and budget. Tier A/B leads are also called: reach within N attempts × meeting × win. The two channels combine as independent tries. Deal value is the average website price. Totals are the sum of the individual probabilities, with a 90 % band.</li>
+          <li><b>Tiers:</b> A = call first (score ≥ 62 and reachable by phone), B = call second (≥ 52), C = email only, Visible = already doing well, skip.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" hidden>
+  <button class="close" id="closeDrawer" aria-label="Close">×</button>
+  <div id="drawerBody"></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

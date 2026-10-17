@@ -5,7 +5,7 @@ import zlib from "node:zlib";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { rankLead, revenueBenchmarks, DEFAULTS } from "../public/score.js";
+import { rankLead, assess, slim, revenueBenchmarks, DEFAULTS } from "../public/score.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = Number(process.env.PORT || 6300);
@@ -38,9 +38,20 @@ function build() {
   });
   return {
     rows, noDomain: noDomain?.length || 0, rowsPerSource,
-    progress: { total: leads.length, http: H.size, render: R.size, maps: M.size },
+    progress: { total: leads.length, http: leads.filter((l) => H.has(l.domain)).length, render: leads.filter((l) => R.get(l.domain)?.v === 2).length, maps: leads.filter((l) => M.has(l.domain)).length },
     bench: revenueBenchmarks(leads), defaults: DEFAULTS, builtAt: new Date().toISOString(),
   };
+}
+
+// Compact list rows (score.js slim()), rebuilt only when a data file changed. Sorted by domain like the hosted API.
+let slimCache = { key: "", value: null };
+function slimmed() {
+  const key = ["leads.json", "http.jsonl", "scans.jsonl", "maps.jsonl"].map((f) => { try { const s = fs.statSync(D(f)); return `${s.mtimeMs}:${s.size}`; } catch { return "-"; } }).join("|");
+  if (slimCache.key === key) return slimCache.value;
+  const b = build();
+  const slims = b.rows.map((x) => slim(assess(x.lead, x.http, x.render, x.maps, b.bench))).sort((p, q) => (p.lead.domain < q.lead.domain ? -1 : 1));
+  slimCache = { key, value: { ...b, slims, rows: undefined } };
+  return slimCache.value;
 }
 
 function send(res, code, body, type = "application/json", req = null) {
@@ -55,6 +66,24 @@ http.createServer(async (req, res) => {
   const url = new URL(req.url, "http://x");
   try {
     if (url.pathname === "/api/data") return send(res, 200, build(), "application/json", req);
+    // Same API as the hosted version (api/handler.js), so the dashboard has one code path. No login locally.
+    if (url.pathname === "/api/me") return send(res, 200, { user: null, hosted: false });
+    if (url.pathname === "/api/meta") {
+      const b = slimmed();
+      return send(res, 200, { bench: b.bench, rowsPerSource: b.rowsPerSource, noDomain: b.noDomain, progress: b.progress, syncedAt: null });
+    }
+    if (url.pathname === "/api/rows") {
+      const b = slimmed(), crm = readJson("crm.json", {});
+      const offset = Math.max(0, Number(url.searchParams.get("offset")) || 0), limit = Math.min(5000, Number(url.searchParams.get("limit")) || 2000);
+      return send(res, 200, b.slims.slice(offset, offset + limit).map((s) => ({ ...s, status: crm[s.lead.domain]?.status || "new" })), "application/json", req);
+    }
+    if (url.pathname === "/api/lead") {
+      const d = url.searchParams.get("d") || "";
+      const x = build().rows.find((r) => r.lead.domain === d);
+      if (!x) return send(res, 404, { error: "not found" });
+      const shot = (v) => (fs.existsSync(D(`shots/${d}-${v}.jpg`)) ? `/shots/${encodeURIComponent(d)}-${v}.jpg` : null);
+      return send(res, 200, { lead: x.lead, http: x.http, render: x.render, maps: x.maps, shots: { m: shot("m"), d: shot("d") } }, "application/json", req);
+    }
     if (url.pathname === "/api/progress") {
       const { leads } = readJson("leads.json", { leads: [] });
       return send(res, 200, { total: leads.length, http: jsonl("http.jsonl").size, render: jsonl("scans.jsonl").size, maps: jsonl("maps.jsonl").size });

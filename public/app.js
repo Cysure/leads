@@ -1,34 +1,49 @@
-import { rankLead, predictCloses, fmtChf, DEFAULTS } from "./score.js";
+import { assess, finalize, predictCloses, fmtChf, DEFAULTS } from "./score.js";
 
 const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const chf = (n) => "CHF " + Math.round(n).toLocaleString("de-CH");
 const pct = (p) => (p * 100).toFixed(p < 0.1 ? 1 : 0) + "%";
 const PAGE = 100;
+const CHUNK = 2000;
 
 const store = {
   get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } },
   set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
 
-let data = null, crm = {}, ranked = [], view = [], page = 0, prediction = null;
+let data = null, me = null, rows = [], crm = {}, ranked = [], view = [], page = 0, prediction = null;
 let A = { ...DEFAULTS, ...store.get("wbdf.assump", {}) };
 const ui = { tier: "AB", sort: "deal", dir: -1, q: "", country: "", status: "", hasPhone: false, relaunch: false, ...store.get("wbdf.ui", {}) };
 
+/** fetch() that sends the hosted version's login cookie and goes to the login page when the session is gone. */
+async function api(path, opts = {}) {
+  const r = await fetch(path, { credentials: "same-origin", ...opts });
+  if (r.status === 401) { location.href = "/login.html"; throw new Error("login required"); }
+  if (!r.ok) throw new Error(`${path}: HTTP ${r.status}`);
+  return r.json();
+}
+
 async function load() {
-  const [d, c] = await Promise.all([fetch("/api/data").then((r) => r.json()), fetch("/api/crm").then((r) => r.json())]);
-  data = d; crm = c;
+  me = await api("/api/me");
+  if (me.hosted) $("#who").innerHTML = `${esc(me.user)} · <a href="#" id="logout">Log out</a>`;
+  const meta = await api("/api/meta");
+  const total = meta.progress?.total || 0;
+  $("#tab-ranked .table-wrap tbody").innerHTML = `<tr><td colspan="12" class="empty">Loading ${total.toLocaleString()} leads…</td></tr>`;
+  const parts = await Promise.all([api("/api/crm"), ...Array.from({ length: Math.max(1, Math.ceil(total / CHUNK)) }, (_, i) => api(`/api/rows?offset=${i * CHUNK}&limit=${CHUNK}`))]);
+  crm = parts[0];
+  rows = parts.slice(1).flat();
+  data = { ...meta, total };
   rank();
   fillCountries();
-  renderProgress(d.progress);
+  renderProgress(meta.progress, meta.syncedAt);
   render();
 }
 
+const countryOf = (l) => l.country || (l.domain.endsWith(".de") ? "Germany" : l.domain.endsWith(".ch") ? "Switzerland" : "Unknown");
+
 function rank() {
-  ranked = data.rows.map((x) => {
-    const r = rankLead(x.lead, x.http, x.render, x.maps, A, data.bench);
-    return { ...x, ...r, status: crm[x.lead.domain]?.status || "new" };
-  });
+  ranked = rows.map((s) => ({ ...finalize(s, A), status: crm[s.lead.domain]?.status || s.status || "new", country: countryOf(s.lead) }));
   const live = ranked.filter((x) => x.live).sort((a, b) => b.dealScore - a.dealScore);
   live.forEach((x, i) => (x.rank = i + 1));
   // Prediction counts only leads whose website has been checked, so pending scans do not inflate it.
@@ -39,14 +54,16 @@ function fillCountries() {
   const sel = $("#country");
   if (sel.options.length > 1) return;
   const counts = {};
-  for (const x of ranked) { const c = x.lead.country || (x.lead.domain.endsWith(".de") ? "Germany" : x.lead.domain.endsWith(".ch") ? "Switzerland" : "Unknown"); x.country = c; counts[c] = (counts[c] || 0) + 1; }
+  for (const x of ranked) counts[x.country] = (counts[x.country] || 0) + 1;
   for (const [c, n] of Object.entries(counts).sort((a, b) => b[1] - a[1])) sel.add(new Option(`${c} (${n})`, c));
   sel.value = ui.country;
 }
 
-function renderProgress(p) {
+function renderProgress(p, syncedAt) {
+  if (!p) return;
   const bar = (label, n) => `<div class="p">${label} <span class="bar"><i style="width:${(100 * n / p.total).toFixed(1)}%"></i></span> ${n.toLocaleString()}/${p.total.toLocaleString()}</div>`;
-  $("#progress").innerHTML = bar("Sites read", p.http) + bar("Rendered", p.render) + bar("Google reviews", p.maps);
+  $("#progress").innerHTML = bar("Sites read", p.http) + bar("Rendered", p.render) + bar("Google reviews", p.maps) +
+    (syncedAt ? `<div class="p">Synced ${new Date(syncedAt).toLocaleString()}</div>` : "");
 }
 
 function filtered() {
@@ -99,7 +116,7 @@ function renderKpis() {
   const P = prediction.all;
   const k = (v, l, hl) => `<div class="kpi${hl ? " hl" : ""}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   $("#kpis").innerHTML =
-    k(data.rows.length.toLocaleString(), `unique companies from ${Object.keys(data.rowsPerSource || {}).length} files`) +
+    k(data.total.toLocaleString(), `unique companies from ${Object.keys(data.rowsPerSource || {}).length} files`) +
     k(live.length.toLocaleString(), `live websites scored (${data.progress.http.toLocaleString()} of ${data.progress.total.toLocaleString()} read)`) +
     k(inv.length.toLocaleString(), `not visible (score under ${A.invisibleBelow})`) +
     k(`${live.filter((x) => x.tier === "A").length} / ${live.filter((x) => x.tier === "B").length}`, `Tier A / B to call · ${Math.round(P.meetings)} meetings expected`) +
@@ -168,7 +185,7 @@ function renderPrediction() {
 const SHOT_W = { m: 390, d: 1366 };
 function shotView(x, which) {
   const r = x.render || {};
-  if (!r.shots?.[which]) return `<div class="noshot">${r.v === 2 ? "Screenshot failed for this site." : "Screenshot pending: the browser pass has not reached this site yet."}</div>`;
+  if (!x.shots?.[which]) return `<div class="noshot">${r.v === 2 ? (r.shots?.[which] ? "Screenshot not uploaded yet: it appears after the next sync." : "Screenshot failed for this site.") : "Screenshot pending: the browser pass has not reached this site yet."}</div>`;
   const cta = which === "m" ? r.ctaMobile : r.ctaDesktop;
   const W = SHOT_W[which], H = Math.min(which === "m" ? 1600 : 2200, cta?.pageHeight || 99999);
   const boxes = (cta?.ctas || []).filter((c) => c.y < H && c.x < W - 4 && c.x + c.w > 4).map((c) => {
@@ -176,12 +193,17 @@ function shotView(x, which) {
     return `<i class="cta ${cls}" title="${esc(c.text)} · ${c.kind}${c.button ? " · button" : " · text link"}${c.contrast ? " · contrast " + c.contrast + ":1" : ""}" style="left:${(100 * c.x / W).toFixed(2)}%;top:${(100 * c.y / H).toFixed(2)}%;width:${(100 * c.w / W).toFixed(2)}%;height:${(100 * c.h / H).toFixed(2)}%"></i>`;
   }).join("");
   const fold = cta?.vh ? `<b class="fold" style="top:${(100 * cta.vh / H).toFixed(2)}%">first screen ends</b>` : "";
-  return `<div class="shot ${which}"><img src="/shots/${encodeURIComponent(x.lead.domain)}-${which}.jpg" alt="Screenshot of ${esc(x.lead.domain)}" loading="lazy">${boxes}${fold}</div>`;
+  return `<div class="shot ${which}"><img src="${esc(x.shots[which])}" alt="Screenshot of ${esc(x.lead.domain)}" loading="lazy">${boxes}${fold}</div>`;
 }
 
-function openLead(domain) {
-  const x = ranked.find((r) => r.lead.domain === domain);
-  if (!x) return;
+async function openLead(domain) {
+  const base = ranked.find((r) => r.lead.domain === domain);
+  if (!base) return;
+  $("#drawerBody").innerHTML = `<h2>${esc(base.lead.company)}</h2><p class="sub">Loading…</p>`;
+  $("#drawer").hidden = $("#scrim").hidden = false;
+  // The list holds compact rows; the drawer needs the full scan record of this one lead.
+  const det = await api(`/api/lead?d=${encodeURIComponent(domain)}`);
+  const x = { ...finalize(assess(det.lead, det.http, det.render, det.maps, data.bench), A), status: base.status, rank: base.rank, shots: det.shots || {} };
   const l = x.lead, a = x.audit, f = x.forecast, m = x.maps, h = x.http || {}, rd = x.render || {}, cv = x.conversion, rev = x.revenue;
   const st = crm[domain] || {};
   const site = h.finalUrl || rd.finalUrl || "https://" + domain;
@@ -258,7 +280,7 @@ function openLead(domain) {
       <select id="crmStatus">${["new", "emailed", "called", "meeting", "won", "lost"].map((s) => `<option ${st.status === s ? "selected" : ""}>${s}</option>`).join("")}</select>
       <input id="crmOwner" placeholder="Owner (salesperson)" value="${esc(st.owner || "")}">
       <textarea id="crmNotes" placeholder="Call notes">${esc(st.notes || "")}</textarea>
-      <button class="primary" id="crmSave">Save</button> <span class="sub" id="crmMsg">${st.updatedAt ? "Last saved " + new Date(st.updatedAt).toLocaleString() : ""}</span>
+      <button class="primary" id="crmSave">Save</button> <span class="sub" id="crmMsg">${st.updatedAt ? `Last saved ${new Date(st.updatedAt).toLocaleString()}${st.updatedBy ? " by " + esc(st.updatedBy) : ""}` : ""}</span>
     </div>
     <h4>Sources</h4><p class="sub">${l.sources.map(esc).join("<br>")}</p>`;
   const tabs = $("#drawerBody .shot-tabs");
@@ -272,8 +294,8 @@ function openLead(domain) {
   };
   $("#crmSave").onclick = async () => {
     const body = { domain, status: $("#crmStatus").value, owner: $("#crmOwner").value, notes: $("#crmNotes").value };
-    const r = await fetch("/api/crm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-    crm[domain] = await r.json();
+    crm[domain] = await api("/api/crm", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    base.status = crm[domain].status;
     x.status = crm[domain].status;
     $("#crmMsg").textContent = "Saved";
     render();
@@ -294,7 +316,7 @@ function exportCsv() {
       x.conversion?.score ?? "", (x.conversion?.issues || []).slice(0, 3).map((i) => `${i.label}: ${i.fix}`).join(" | "),
       x.maps?.rating ?? "", x.maps?.reviews ?? "", x.revenue.chf, `${x.revenue.basis} (${x.revenue.confidence})`, x.fit.score, f.offer, f.dealChf,
       f.called ? "email + call" : "email", (f.pMeeting * 100).toFixed(1) + "%", (f.pClose * 100).toFixed(2) + "%", f.evChf,
-      [...x.audit.seo, ...x.audit.geo].sort((p, q) => q.pts - p.pts).slice(0, 5).map((i) => i.label).join("; "), x.talk.join(" | "), x.status, st.owner || "", st.notes || ""]);
+      x.audit.top.join("; "), x.talk.join(" | "), x.status, st.owner || "", st.notes || ""]);
   }
   const csv = "﻿" + lines.map((r) => r.map((v) => `"${String(v ?? "").replace(/"/g, '""')}"`).join(";")).join("\r\n");
   const a = document.createElement("a");
@@ -346,5 +368,11 @@ $("#assump").oninput = (e) => {
 };
 $("#resetAssump").onclick = () => { A = { ...DEFAULTS }; store.set("wbdf.assump", {}); renderAssumptions(); rank(); render(); };
 renderAssumptions();
-setInterval(async () => { try { renderProgress(await fetch("/api/progress").then((r) => r.json())); } catch {} }, 20000);
+setInterval(async () => { try { const m = await api("/api/meta"); renderProgress(m.progress, m.syncedAt); } catch {} }, 60000);
+document.addEventListener("click", async (e) => {
+  if (e.target.id !== "logout") return;
+  e.preventDefault();
+  await fetch("/api/logout", { method: "POST" });
+  location.href = "/login.html";
+});
 load();

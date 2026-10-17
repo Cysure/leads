@@ -239,33 +239,74 @@ export function conversion(r) {
   return { score, issues: out.sort((a, b) => b.pts - a.pts), mainMobile: mM, mainDesktop: mD };
 }
 
-/** Full ranking for one lead. */
-export function rankLead(lead, h, r, m, A = DEFAULTS, bench = null) {
+/**
+ * The heavy part of the ranking: everything that does not depend on the forecast assumptions.
+ * Runs once per lead at sync time (or in the local server); the result is then trimmed with slim().
+ */
+export function assess(lead, h, r, m, bench = null) {
   const live = !h?.parked && !!(h?.ok || r?.ok);
-  const rev = estimateRevenue(lead, bench, A);
+  const scanned = !!(h || r);
+  const rev = estimateRevenue(lead, bench, DEFAULTS);
   const fitR = fit(lead, m, rev);
   const rv = reviewSignal(m);
   if (!live) {
     // No working site: still emailed. Parked/placeholder = the biggest gap there is; a dead domain's mail bounces.
-    const scanned = !!(h || r);
     const bounce = !h?.parked && /ENOTFOUND|EAI_AGAIN/.test(h?.error || "");
-    const fc = forecast(lead, scanned ? 1 : 0.4, fitR, rev, false, A, { bounce });
-    return { live, scanned, fit: fitR, reviews: rv, revenue: rev, forecast: fc, dealScore: 0, tier: "X", noSite: h?.parked || (bounce ? "Domain does not exist" : h?.error || "") };
+    return { lead, http: h, render: r, maps: m, live, scanned, bounce, fit: fitR, reviews: rv, revenue: rev,
+      noSite: h?.parked || (bounce ? "Domain does not exist" : h?.error || r?.error || "") };
   }
   const a = audit(h, r, m);
-  const gap = (100 - a.visibility) / 100;
-  // Rank: how big the visibility gap is, how reachable and qualified the buyer is, and proof of real demand.
   const conv = conversion(r);
-  const dealScore = clamp(0.5 * (100 - a.visibility) + 0.38 * fitR.score + 12 * rv.strength + (a.relaunch ? 4 : 0) + (conv ? (60 - conv.score) * 0.06 : 0));
-  const invisible = a.visibility < A.invisibleBelow;
-  const hasPhone = !!fitR.phone;
-  const tier = !invisible ? "V" : dealScore >= 62 && hasPhone ? "A" : dealScore >= 52 ? "B" : "C";
-  const fc = forecast(lead, gap, fitR, rev, (tier === "A" || tier === "B") && hasPhone, A);
-  fc.offer = a.relaunch ? "New website (relaunch)" : "Website refresh + SEO/GEO";
   const issues = [...a.seo, ...a.geo].sort((x, y) => y.pts - x.pts);
   const talk = issues.slice(0, conv?.issues.length ? 2 : 3).map((i) => i.say);
   if (conv?.issues.length) talk.push(conv.issues[0].say);
-  return { live, scanned: true, audit: a, conversion: conv, fit: fitR, reviews: rv, revenue: rev, forecast: fc, dealScore, invisible, tier, talk };
+  return { lead, http: h, render: r, maps: m, live, scanned, audit: a, conversion: conv, fit: fitR, reviews: rv, revenue: rev, talk };
+}
+
+/** The light part: forecast, deal score and tier for the current assumptions. Works on full or slim records. */
+export function finalize(b, A = DEFAULTS) {
+  if (!b.live) {
+    const fc = forecast(b.lead, b.scanned ? 1 : 0.4, b.fit, b.revenue, false, A, { bounce: b.bounce });
+    return { ...b, forecast: fc, dealScore: 0, tier: "X", invisible: true };
+  }
+  const a = b.audit, conv = b.conversion;
+  // Rank: how big the visibility gap is, how reachable and qualified the buyer is, and proof of real demand.
+  const dealScore = clamp(0.5 * (100 - a.visibility) + 0.38 * b.fit.score + 12 * b.reviews.strength + (a.relaunch ? 4 : 0) + (conv ? (60 - conv.score) * 0.06 : 0));
+  const invisible = a.visibility < A.invisibleBelow;
+  const hasPhone = !!b.fit.phone;
+  const tier = !invisible ? "V" : dealScore >= 62 && hasPhone ? "A" : dealScore >= 52 ? "B" : "C";
+  const fc = forecast(b.lead, (100 - a.visibility) / 100, b.fit, b.revenue, (tier === "A" || tier === "B") && hasPhone, A);
+  fc.offer = a.relaunch ? "New website (relaunch)" : "Website refresh + SEO/GEO";
+  return { ...b, forecast: fc, dealScore, invisible, tier };
+}
+
+/** Full ranking for one lead. */
+export function rankLead(lead, h, r, m, A = DEFAULTS, bench = null) {
+  return finalize(assess(lead, h, r, m, bench), A);
+}
+
+/**
+ * Compact list record: what the table, filters, KPIs and CSV need, and what finalize() reads. About 1 kB per lead,
+ * so 12k+ leads load in a few chunks. The drawer fetches the full record for one lead.
+ */
+export function slim(b) {
+  const l = b.lead, c = l.contacts?.[0] || {};
+  const a = b.audit;
+  return {
+    lead: {
+      domain: l.domain, company: l.company, industry: l.industry || "", city: l.city || "", region: l.region || "", country: l.country || "",
+      phone: l.phone || "", hiring: l.hiring ? 1 : 0, employees: l.employees ?? null, employees_band: l.employees_band || "", sources: l.sources?.length || 0,
+      contacts: [{ first: c.first || "", last: c.last || "", title: c.title || "", email: c.email || "", phone: c.phone || "", seniority: c.seniority || 0 }],
+    },
+    http: b.http?.finalUrl ? { finalUrl: b.http.finalUrl } : null,
+    render: b.render?.v === 2 ? { v: 2 } : null,
+    maps: b.maps ? { matched: !!b.maps.matched, error: b.maps.error ? 1 : 0, rating: b.maps.rating ?? null, reviews: b.maps.reviews ?? 0, mapsPhone: b.maps.mapsPhone || "" } : null,
+    live: b.live, scanned: b.scanned, bounce: b.bounce || false, noSite: b.noSite || "",
+    audit: a ? { visibility: a.visibility, seoScore: a.seoScore, geoScore: a.geoScore, relaunch: a.relaunch, cms: a.cms,
+      top: [...a.seo, ...a.geo].sort((x, y) => y.pts - x.pts).slice(0, 5).map((i) => i.label) } : null,
+    conversion: b.conversion ? { score: b.conversion.score, issues: b.conversion.issues.slice(0, 3).map((i) => ({ label: i.label, fix: i.fix })) } : null,
+    fit: b.fit, reviews: b.reviews, revenue: b.revenue, talk: b.talk || [],
+  };
 }
 
 /** Portfolio prediction: expected closes with a 90 % range (independent leads), and what they are worth. */

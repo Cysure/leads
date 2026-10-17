@@ -11,5 +11,7 @@ while true; do
   maps_left=$(grep -o "[0-9]* to look up" data/maps.log | head -1 | cut -d' ' -f1)
   scan_left=$(grep -o "[0-9]* to go" data/scan.log | head -1 | cut -d' ' -f1)
   echo "$(date +%H:%M) round done: reviews left $maps_left, screenshots left $scan_left"
+  # Hosted dashboard: push the new results after every round (needs .env, see .env.example).
+  if grep -q "^DEALFLOW_DATABASE_URL=." .env 2>/dev/null; then node src/sync.mjs > data/sync.log 2>&1 && tail -1 data/sync.log; fi
   if [ "${maps_left:-1}" = "0" ] && [ "${scan_left:-1}" = "0" ] && grep -q "done:" data/http.log; then echo "all enriched"; break; fi
 done

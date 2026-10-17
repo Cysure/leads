@@ -4,12 +4,24 @@
   "type": "module",
   "scripts": {
     "start": "node src/server.mjs",
-    "scan": "node src/scan.mjs"
+    "scan:http": "node src/scan-http.mjs",
+    "scan": "node src/scan.mjs",
+    "maps": "node src/maps.mjs",
+    "sync": "node src/sync.mjs",
+    "adduser": "node src/adduser.mjs"
   },
   "dependencies": {
+    "pg": "^8.23.1"
+  },
+  "devDependencies": {
+    "@vercel/blob": "^1.1.1",
     "crawlee": "^3.18.2",
     "playwright": "^1.64.1",
     "robots-parser": "^3.0.1",
+    "sharp": "^0.34.5",
     "undici": "^7.30.1"
+  },
+  "engines": {
+    "node": ">=20"
   }
 }

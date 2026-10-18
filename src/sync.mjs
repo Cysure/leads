@@ -55,6 +55,16 @@ const keep = leads.map((l) => l.domain);
 const del = await pool.query("delete from leads where not (domain = any($1::text[]))", [keep]);
 if (del.rowCount) log(`removed ${del.rowCount} leads that were merged or dropped`);
 
+// Dashboard header info (lead count, progress). Written before the slow screenshot upload so the hosted
+// dashboard is complete as soon as the rows are in, and again at the end.
+async function writeMeta() {
+  const info = { bench, rowsPerSource, noDomain: noDomain?.length || 0, syncedAt: new Date().toISOString(),
+    progress: { total: leads.length, http: leads.filter((l) => H.has(l.domain)).length, render: leads.filter((l) => R.get(l.domain)?.v === 2).length, maps: leads.filter((l) => M.has(l.domain)).length } };
+  await pool.query("insert into meta (key, value) values ('info', $1) on conflict (key) do update set value = excluded.value", [JSON.stringify(info)]);
+  return info;
+}
+await writeMeta();
+
 // 2. Screenshots: resize and upload the ones not uploaded yet.
 if (!process.argv.includes("--no-shots")) {
   if (!process.env.BLOB_READ_WRITE_TOKEN) log("BLOB_READ_WRITE_TOKEN not set: skipping screenshots");
@@ -96,9 +106,5 @@ if (process.argv.includes("--import-crm") && fs.existsSync(D("crm.json"))) {
   log(`imported ${Object.keys(crm).length} local CRM entries (existing hosted entries kept)`);
 }
 
-// 4. Dashboard header info.
-const info = { bench, rowsPerSource, noDomain: noDomain?.length || 0, syncedAt: new Date().toISOString(),
-  progress: { total: leads.length, http: leads.filter((l) => H.has(l.domain)).length, render: leads.filter((l) => R.get(l.domain)?.v === 2).length, maps: leads.filter((l) => M.has(l.domain)).length } };
-await pool.query("insert into meta (key, value) values ('info', $1) on conflict (key) do update set value = excluded.value", [JSON.stringify(info)]);
-log("sync done", JSON.stringify(info.progress));
+log("sync done", JSON.stringify((await writeMeta()).progress));
 await pool.end();

@@ -32,8 +32,8 @@ One-time setup:
 1. Vercel: **Add New → Project**, import `Cysure/leads`, keep the defaults (`vercel.json` configures everything), deploy.
 2. In the project, open **Storage**: create a **Neon** Postgres database and a **Blob** store, and connect both to the project.
    This sets `DATABASE_URL` and `BLOB_READ_WRITE_TOKEN` on Vercel.
-3. **Settings → Environment Variables**: add `DEALFLOW_SECRET`, a random string of at least 32 characters, e.g. from
-   `node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"`. Then redeploy.
+3. Nothing else to configure: on the first request the app creates its tables and a session-signing key in the
+   database. (`DEALFLOW_SECRET`, if set, overrides the stored key.)
 4. On this machine, copy `.env.example` to `.env` and fill in the Neon connection string and the Blob token from the
    Storage tab.
 5. `npm run adduser <name>` for each salesperson (the password is typed in, never stored in plain text), then `npm run sync`.

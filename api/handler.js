@@ -1,7 +1,7 @@
 // Hosted API (Vercel function; vercel.json routes /api/* here). Everything except login needs a session.
 // Data lives in Postgres (see lib/db.mjs), written by the local sync script (src/sync.mjs).
-import { db } from "../lib/db.mjs";
-import { checkPassword, clearCookie, sessionCookie, userFrom } from "../lib/auth.mjs";
+import { db, ensureSchema } from "../lib/db.mjs";
+import { checkPassword, clearCookie, loadKey, sessionCookie, userFrom } from "../lib/auth.mjs";
 
 const MAX_ROWS = 2000; // keeps each response well under Vercel's 4.5 MB limit (~1.2 kB per row)
 
@@ -21,12 +21,17 @@ async function readBody(req) {
   return s ? JSON.parse(s) : {};
 }
 
+// First request on a fresh database creates the tables and the session key; later ones skip it.
+let readyP = null;
+const ready = () => (readyP ??= (async () => { await ensureSchema(); await loadKey(db()); })().catch((e) => { readyP = null; throw e; }));
+
 const STATUSES = new Set(["new", "emailed", "called", "meeting", "won", "lost"]);
 
 export default async function handler(req, res) {
   const url = new URL(req.url, "http://x");
   const route = (url.searchParams.get("route") || url.pathname.replace(/^\/api\/?/, "")).replace(/\/+$/, "");
   try {
+    await ready();
     if (route === "login" && req.method === "POST") {
       const { username = "", password = "" } = await readBody(req);
       const u = String(username).trim().toLowerCase();

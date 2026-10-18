@@ -6,3 +6,9 @@ storage/
 !.env.example
 .vercel/
 *.tmp
+
+.vercel
+.env*
+.agents/
+.claude/
+skills-lock.json

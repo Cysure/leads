@@ -13,7 +13,7 @@ for (const line of fs.existsSync(path.join(root, ".env")) ? fs.readFileSync(path
   if (m && !process.env[m[1]]) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
 }
 const { db, ensureSchema } = await import("../lib/db.mjs");
-const { assess, slim, revenueBenchmarks } = await import("../public/score.js");
+const { assess, slim, finalize, revenueBenchmarks, DEFAULTS } = await import("../public/score.js");
 
 const D = (f) => path.join(root, "data", f);
 const jsonl = (f) => {
@@ -37,17 +37,26 @@ for (const l of leads) {
   const h = H.get(l.domain) || null, r = R.get(l.domain) || null, m = M.get(l.domain) || null;
   const summary = slim(assess(l, h, r, m, bench));
   const detail = { lead: l, http: h, render: r, maps: m };
-  const hash = crypto.createHash("sha1").update(JSON.stringify([summary, detail])).digest("base64url");
-  if (have.get(l.domain)?.hash !== hash) changed.push([l.domain, summary, detail, hash]);
+  // Ranking at the default assumptions, as plain columns so the API can filter and sort in SQL.
+  const f = finalize(summary, DEFAULTS);
+  const cols = { live: !!f.live, tier: f.tier, deal_score: f.dealScore ?? 0, visibility: f.audit?.visibility ?? null, p_close: f.forecast?.pClose ?? 0,
+    ev_chf: f.forecast?.evChf ?? 0, company: l.company || l.domain, country: summary.lead.country || (l.domain.endsWith(".de") ? "Germany" : l.domain.endsWith(".ch") ? "Switzerland" : ""),
+    industry: l.industry || "", city: l.city || l.region || "" };
+  const hash = "v2:" + crypto.createHash("sha1").update(JSON.stringify([summary, detail, cols])).digest("base64url");
+  if (have.get(l.domain)?.hash !== hash) changed.push([l.domain, summary, detail, hash, cols]);
 }
 log(`${leads.length} leads, ${changed.length} new or changed`);
 for (let i = 0; i < changed.length; i += 250) {
   const part = changed.slice(i, i + 250);
   await pool.query(
-    `insert into leads (domain, summary, detail, hash, updated_at)
-     select * , now() from unnest($1::text[], $2::jsonb[], $3::jsonb[], $4::text[])
-     on conflict (domain) do update set summary = excluded.summary, detail = excluded.detail, hash = excluded.hash, updated_at = now()`,
-    [part.map((x) => x[0]), part.map((x) => JSON.stringify(x[1])), part.map((x) => JSON.stringify(x[2])), part.map((x) => x[3])]);
+    `insert into leads (domain, summary, detail, hash, live, tier, deal_score, visibility, p_close, ev_chf, company, country, industry, city, updated_at)
+     select *, now() from unnest($1::text[], $2::jsonb[], $3::jsonb[], $4::text[], $5::bool[], $6::text[], $7::int[], $8::int[], $9::float8[], $10::int[],
+       $11::text[], $12::text[], $13::text[], $14::text[])
+     on conflict (domain) do update set summary = excluded.summary, detail = excluded.detail, hash = excluded.hash, live = excluded.live,
+       tier = excluded.tier, deal_score = excluded.deal_score, visibility = excluded.visibility, p_close = excluded.p_close, ev_chf = excluded.ev_chf,
+       company = excluded.company, country = excluded.country, industry = excluded.industry, city = excluded.city, updated_at = now()`,
+    [part.map((x) => x[0]), part.map((x) => JSON.stringify(x[1])), part.map((x) => JSON.stringify(x[2])), part.map((x) => x[3]),
+      ...["live", "tier", "deal_score", "visibility", "p_close", "ev_chf", "company", "country", "industry", "city"].map((k) => part.map((x) => x[4][k]))]);
   if ((i / 250) % 8 === 0) log(`  rows ${Math.min(i + 250, changed.length)}/${changed.length}`);
 }
 // Leads that no longer exist locally (merged into another domain) go away.

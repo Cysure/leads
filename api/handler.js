@@ -1,7 +1,9 @@
-// Hosted API (Vercel function; vercel.json routes /api/* here). Everything except login needs a session.
+// Hosted API (Vercel function; vercel.json routes /api/* here). Everything except login needs a session cookie
+// or an API key (Authorization: Bearer wbdf_...). /api/mcp is the MCP server for Claude, /api/v1/* the REST API.
 // Data lives in Postgres (see lib/db.mjs), written by the local sync script (src/sync.mjs).
 import { db, ensureSchema } from "../lib/db.mjs";
-import { checkPassword, clearCookie, loadKey, sessionCookie, userFrom } from "../lib/auth.mjs";
+import { apiKeyFrom, checkPassword, clearCookie, loadKey, sessionCookie, userFrom, userFromApiKey } from "../lib/auth.mjs";
+import { callTool, mcpHttp } from "../lib/mcp.mjs";
 
 const MAX_ROWS = 2000; // keeps each response well under Vercel's 4.5 MB limit (~1.2 kB per row)
 
@@ -44,8 +46,40 @@ export default async function handler(req, res) {
     }
     if (route === "logout") return send(res, 200, { ok: true }, { "Set-Cookie": clearCookie() });
 
-    const user = userFrom(req);
-    if (!user) return send(res, 401, { error: "login required" });
+    const key = apiKeyFrom(req, route);
+    const user = key ? await userFromApiKey(db(), key) : userFrom(req);
+    if (!user) return send(res, 401, { error: key ? "invalid API key" : "login required" }, key || route.startsWith("mcp") || route.startsWith("v1") ? { "WWW-Authenticate": 'Bearer realm="dealflow"' } : {});
+
+    // MCP (Streamable HTTP, stateless): POST JSON-RPC, JSON response. No server-sent events, so GET is not offered.
+    if (route === "mcp" || route.startsWith("mcp/k/")) {
+      if (req.method !== "POST") return send(res, 405, { error: "POST JSON-RPC messages to this endpoint" }, { Allow: "POST" });
+      const out = await mcpHttp(db(), await readBody(req), user);
+      if (out === null) { res.statusCode = 202; return res.end(); }
+      return send(res, 200, out);
+    }
+    // REST: the same operations as the MCP tools, for scripts and other tools.
+    if (route.startsWith("v1/")) {
+      const parts = route.split("/").slice(1).map(decodeURIComponent);
+      const q = Object.fromEntries(url.searchParams);
+      delete q.route;
+      try {
+        if (parts[0] === "summary" && req.method === "GET") return send(res, 200, await callTool(db(), "pipeline_summary", {}, user));
+        if (parts[0] === "leads" && !parts[1] && req.method === "GET") {
+          const list = (v) => (v ? String(v).split(",").map((x) => x.trim()).filter(Boolean) : undefined);
+          const bool = (v) => (v == null ? undefined : v === "true" || v === "1");
+          const num = (v) => (v == null || v === "" ? undefined : Number(v));
+          return send(res, 200, await callTool(db(), "search_leads", { query: q.query, tier: list(q.tier), status: list(q.status), country: q.country,
+            city: q.city, industry: q.industry, max_visibility: num(q.max_visibility), has_phone: bool(q.has_phone), hiring: bool(q.hiring),
+            needs_relaunch: bool(q.needs_relaunch), owner: q.owner, sort: q.sort, limit: num(q.limit), offset: num(q.offset) }, user));
+        }
+        if (parts[0] === "leads" && parts[1] && req.method === "GET") return send(res, 200, await callTool(db(), "get_lead", { domain: parts[1] }, user));
+        if (parts[0] === "leads" && parts[1] && (req.method === "PATCH" || req.method === "POST"))
+          return send(res, 200, await callTool(db(), "update_lead", { ...(await readBody(req)), domain: parts[1] }, user));
+      } catch (e) {
+        return send(res, 400, { error: String(e.message || e) });
+      }
+      return send(res, 404, { error: "unknown route", routes: ["GET /api/v1/summary", "GET /api/v1/leads?query=&tier=A,B&...", "GET /api/v1/leads/{domain}", "PATCH /api/v1/leads/{domain}"] });
+    }
 
     if (route === "me") return send(res, 200, { user, hosted: true });
     if (route === "meta") {

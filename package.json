@@ -8,7 +8,8 @@
     "scan": "node src/scan.mjs",
     "maps": "node src/maps.mjs",
     "sync": "node src/sync.mjs",
-    "adduser": "node src/adduser.mjs"
+    "adduser": "node src/adduser.mjs",
+    "apikey": "node src/apikey.mjs"
   },
   "dependencies": {
     "pg": "^8.23.1"

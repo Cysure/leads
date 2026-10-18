@@ -12,3 +12,4 @@ storage/
 .agents/
 .claude/
 skills-lock.json
+keys/

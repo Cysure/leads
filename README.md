@@ -41,3 +41,30 @@ One-time setup:
 `pipeline/enrich-loop.sh` runs the sync automatically after every round once `.env` exists.
 
 Local testing of the hosted mode: `node src/dev-hosted.mjs --env .env.test` against any Postgres.
+
+## API for Claude (MCP) and scripts
+
+The hosted app is also an MCP server, so Claude can work with the leads directly. It has four tools:
+
+- `search_leads`: filter by tier, status, city, industry, visibility, phone, hiring, owner. Results come ranked.
+- `get_lead`: one lead's full audit, opening lines for a call, conversion fixes, forecast and sales notes.
+- `update_lead`: set status or owner, or append a dated note. Changes are recorded as "<user> (API)".
+- `pipeline_summary`: lead counts per tier and status, and the predicted sales.
+
+Every person gets their own API key, tied to their dashboard login:
+
+```bash
+npm run apikey create anna "Anna's Claude"     # prints the key and the connect commands once
+npm run apikey list
+npm run apikey revoke <id>
+```
+
+Connect:
+
+- Claude Code: `claude mcp add --transport http webbetter-leads https://leads-jet-tau.vercel.app/api/mcp --header "Authorization: Bearer <key>"`
+- Claude.ai / Claude Desktop: Settings → Connectors → Add custom connector, URL `https://leads-jet-tau.vercel.app/api/mcp/k/<key>`
+  (that form of the URL carries the key, so treat the URL itself as a secret).
+
+The same operations are available as REST with `Authorization: Bearer <key>`:
+`GET /api/v1/summary`, `GET /api/v1/leads?tier=A,B&city=Zürich&limit=20`, `GET /api/v1/leads/{domain}`,
+`PATCH /api/v1/leads/{domain}` with `{"status":"called","append_note":"..."}`.
